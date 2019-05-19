@@ -115,7 +115,7 @@ class LoadData:
         time = []
         hs = []
         manu = []
-        for root, dirs, file in os.walk('/home/yangwei/PycharmProjects/bayesian_analysis/UAH/D2/'):
+        for root, dirs, file in os.walk('/home/yangwei/PycharmProjects/pymc3_mcmc/UAH/D2/'):
             for path in dirs:
                 detection = pd.read_csv(os.path.join(root, path, 'PROC_VEHICLE_DETECTION.txt'), sep='\s+', names=header_1)
                 event = pd.read_csv(os.path.join(root, path, 'EVENTS_LIST_LANE_CHANGES.txt'), sep='\s+', names=header_2)

@@ -7,12 +7,14 @@ import pandas as pd
 import seaborn as sns
 import theano.tensor as tt
 import matplotlib.pyplot as plt
+import pymc3.distributions.transforms as tr
 from itertools import permutations
 from sklearn.mixture import GaussianMixture
 
+
 # %%
 K = 3
-ON_TRAIN = False
+ON_TRAIN = True
 
 # %%
 class Functions:
@@ -198,13 +200,14 @@ class BayesianGMM:
                 chol = pm.expand_packed_triangular(2, tril)
                 obs = pm.MvNormal('obs', mu=mu, chol=chol, observed=data)
             else:
-                w = pm.Dirichlet('w', a=np.ones(K))
+                w = pm.Dirichlet('w', a=np.ones(K), transform=tr.ordered, testval=np.array([0.1, 0.4, 0.5]))
                 mu = tt.stack([pm.Normal('mu' + str(k), mu=[20, 0], sd=10, shape=2) for k in range(K)])
                 tril = tt.stack([pm.LKJCholeskyCov('chol' + str(k), n=2, eta=1,
                                                    sd_dist=pm.HalfCauchy.dist(2.5)) for k in range(K)])
                 chol = tt.stack([pm.expand_packed_triangular(2, tril[k]) for k in range(K)])
                 dist = [pm.MvNormal.dist(mu=mu[k], chol=chol[k]) for k in range(K)]
                 obs = pm.Mixture('obs', w=w, comp_dists=dist, observed=data)
+        print(self.model.test_point)
 
     def training(self, advi=False):
         with self.model:
@@ -212,7 +215,7 @@ class BayesianGMM:
                 inference = pm.fit(method='advi')
                 trace = inference.sample()
             else:
-                trace = pm.sample(chains=1)
+                trace = pm.sample()
         pm.summary(trace)
         return trace
 
@@ -372,7 +375,7 @@ class PostProcess(Functions):
         return p1
 
     def step(self):
-        plt.figure(1)
+        fig = plt.figure(1)
         for i in range(len(self.var)):
             plt.subplot(711+i)
             plt.ylabel('Frequency')
@@ -381,6 +384,8 @@ class PostProcess(Functions):
             x = [np.linspace(self.var[i][:, k].min(), self.var[i][:, k].max(), 50) for k in range(col)]
             p = [self.norm_1d(x[k], self.var_mu[i][k], self.var_std[i][k]) for k in range(col)]
             [plt.plot(x[k], p[k]) for k in range(col)]
+        # fig.savefig('./img/step', format='svg')
+
 
 
 # %%
@@ -406,17 +411,13 @@ class Estimation:
 
 # %%
 if ON_TRAIN:
-    # PERCENT = np.arange(0.1, 1., 0.1)
-    PERCENT = np.linspace(0.1, 0.1, 10)
     # PERCENT = [0.1]
-    data = []
-    for p in PERCENT:
-        d = LoadData()
-        data_prior, m = d.prior_samples(p)
-        f = BayesianGMM(data_prior)
-        trace = f.training()
-        data.append([data_prior, m, trace])
-    with open('./results/data0.pkl', 'wb') as file:
+    d = LoadData()
+    data_prior, m = d.prior_samples(0.1)
+    f = BayesianGMM(data_prior)
+    trace = f.training()
+    data = [data_prior, m, trace]
+    with open('./results/data1.pkl', 'wb') as file:
         pickle.dump(data, file)
 else:
     with open('./results/data.pkl', 'rb') as file:
@@ -425,21 +426,20 @@ else:
     # plt.ion()
     # plt.show()
     # c = ['r', 'b', 'lime']
-    for i in range(len(data)):
-        data_prior, m, trace = data[i]
-        p = PostProcess(data_prior, trace)
-        # data_post = p.post_samples()
-        # p.joint_dist(data_post)
-        # p.marginalized_dist(data_post)
-        # p.compare_1d()
-        # prob = p.compare_2d()
-        # e = Estimation(data_prior, m)
-        # e.importance_sampling(prob)
-        p.step()
-        # j = 0
-        # for var in p.var_mu:
-        #     plt.subplot(711 + j)
-        #     col = len(var)
-        #     [plt.plot(i, var[k], color=c[k], marker='.', markersize=10) for k in range(col)]
-        #     j += 1
-        plt.subplots_adjust(hspace=0.5)
+    data_prior, m, trace = data
+    p = PostProcess(data_prior, trace)
+    # data_post = p.post_samples()
+    # p.joint_dist(data_post)
+    # p.marginalized_dist(data_post)
+    # p.compare_1d()
+    # prob = p.compare_2d()
+    # e = Estimation(data_prior, m)
+    # e.importance_sampling(prob)
+    p.step()
+    # j = 0
+    # for var in p.var_mu:
+    #     plt.subplot(711 + j)
+    #     col = len(var)
+    #     [plt.plot(i, var[k], color=c[k], marker='.', markersize=10) for k in range(col)]
+    #     j += 1
+    plt.subplots_adjust(hspace=0.5)

@@ -1,19 +1,20 @@
 import os
 import pickle
+import scipy.stats
 import pymc3 as pm
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import theano.tensor as tt
 import matplotlib.pyplot as plt
+from scipy.stats import dirichlet
 from itertools import permutations
 from sklearn.mixture import GaussianMixture
 
-# %%
 K = 3
 ON_TRAIN = False
 
-# %%
+
 class Functions:
     def __init__(self):
         pass
@@ -41,7 +42,7 @@ class Functions:
             cov = C.dot(C.T)
         return cov
 
-    def sampling(self, w, mu, cov, N=2000):
+    def sampling(self, w, mu, cov, N=1000):
         num = int(w * N)
         if len(mu) == 1:
             samples = np.random.normal(mu, cov, size=num)
@@ -78,8 +79,18 @@ class Functions:
             prob[i] = np.sum([w[k] * f[k] for k in range(K)])
         return prob
 
+    def cluster(self, x, w, mu, cov):
+        prob = np.zeros([x.shape[0], K])
+        cluster = np.zeros(x.shape[0])
+        for i, v in enumerate(x):
+            c = [np.sqrt(1 / ((2 * 3.14) ** 2 * np.linalg.det(cov[k]))) for k in range(K)]
+            f = [c[k] * np.exp(-0.5 * (v - mu[k]).dot(np.linalg.inv(cov[k])).dot((v - mu[k]).T)) for k in range(K)]
+            for k in range(K):
+                prob[i, k] = w[k] * f[k]
+            cluster[i] = prob[i].argmax()
+        return cluster
 
-# %%
+
 class LoadData:
     def __init__(self):
         self.data = self.read_file()
@@ -174,16 +185,9 @@ class LoadData:
         data_prior = pd.DataFrame([x, dx]).transpose()
         data_prior = data_prior.dropna(axis=0)
         data_prior.columns = ['x', 'dx']
-        #         plt.figure()
-        #         plt.plot(data_prior['x'])
-        #         plt.figure()
-        #         plt.plot(data_prior['dx'])
-        #         plt.figure()
-        #         sns.heatmap(data_prior.corr(), annot=True)
         return data_prior, m
 
 
-# %%
 class BayesianGMM(Functions):
     def __init__(self, data):
         super(BayesianGMM, self).__init__()
@@ -228,7 +232,6 @@ class BayesianGMM(Functions):
                 pass
 
 
-# %%
 class PostProcess(Functions):
     def __init__(self, data, trace):
         super(PostProcess, self).__init__()
@@ -236,10 +239,17 @@ class PostProcess(Functions):
         self.trace = trace
         self.var, self.var_mu, self.var_std, self.var_name = self.stats()
         self.gmm = GaussianMixture(K).fit(data)
+        if K==3:
+            colours = np.eye(3)
+        else:
+            colours = dirichlet.rvs(0.1*np.ones(3), K) + dirichlet.rvs(0.1*np.ones(3), K)
+            colours = colours / sum(colours)
+        self.colours = colours
+        self.z_to_colour = lambda z: colours.T.dot(np.reshape(z, (K, 1)))
 
     def stats(self):
         order = np.argsort(self.trace['w'].mean(0))
-        var_name = [['mu' + str(k) for k in order], ['sigma' + str(k) for k in order], ['corr' + str(k) for k in order]]
+        var_name = [['mu'+str(k) for k in order], ['sigma'+str(k) for k in order], ['corr'+str(k) for k in order]]
         var_name = self.flatten(var_name)
         var = [np.vstack([self.trace['w'][:, k] for k in order]).T]
         var_mu = [var[0].mean(0)]
@@ -252,27 +262,34 @@ class PostProcess(Functions):
         var_name.insert(0, 'w')
         return var, var_mu, var_std, var_name
 
-    def post_samples(self):
+    def post_samples(self, N=1000):
         w = [self.var_mu[0][k] for k in range(K)]
-        mu = [self.var_mu[k+1] for k in range(K)]
-        cov = [self.make_cov_matrix(sigma=self.var_mu[k+1+K], corr=self.var_mu[k+1+2*K]) for k in range(K)]
-        samples = [self.sampling(w[k], mu[k], cov[k]) for k in range(K)]
+        mu = [self.var_mu[k + 1] for k in range(K)]
+        cov = [self.make_cov_matrix(sigma=self.var_mu[k + 1 + K], corr=self.var_mu[k + 1 + 2 * K]) for k in range(K)]
+        samples = [self.sampling(w[k], mu[k], cov[k], N) for k in [2, 0, 1]]
         fig = plt.figure()
-        [plt.scatter(samples[k][:, 0], samples[k][:, 1], label='component' + str(k)) for k in range(K)]
+        plt.subplot(121)
+        [plt.scatter(samples[k][:, 0], samples[k][:, 1], label='component'+str(k)) for k in range(K)]
         plt.legend()
-        plt.xlim([0, 60])
+        plt.xlim([5, 45])
         plt.ylim([-30, 30])
-        fig.savefig('./img/post_samples', format='svg')
+        plt.subplot(122)
         data_post = np.concatenate(samples)
+        p = self.cluster(data_post, w, mu, cov)
+        plt.scatter(data_post[:, 0], data_post[:, 1], c=p)
+        # plt.legend()
+        plt.xlim([5, 45])
+        plt.ylim([-30, 30])
         data_post = pd.DataFrame(data_post)
         data_post.columns = ['x', 'dx']
+        fig.savefig('./img/post_samples.svg', format='svg')
         return data_post
 
     def joint_dist(self, data_post):
-        fig = plt.figure()
-        sns.jointplot('x', 'dx', data=self.data, xlim=[5, 45], ylim=[-20, 20], kind='kde', space=0, color='r')
-        sns.jointplot('x', 'dx', data=data_post, xlim=[5, 45], ylim=[-20, 20], kind='kde', space=0, color='g')
-        fig.savefig('./img/joint_dist', format='svg')
+        # fig = plt.figure()
+        sns.jointplot('x', 'dx', data=self.data, xlim=[5, 45], ylim=[-30, 30], kind='kde', space=0, color='r')
+        sns.jointplot('x', 'dx', data=data_post, xlim=[5, 45], ylim=[-30, 30], kind='kde', space=0, color='g')
+        # fig.savefig('./img/joint_dist.svg', format='svg')
 
     def marginalized_dist(self, data_post):
         fig = plt.figure()
@@ -282,7 +299,7 @@ class PostProcess(Functions):
         sns.distplot(data_post['x'], bins=30, kde=False, norm_hist=True,
                      hist_kws={'histtype': 'step', 'linewidth': 3}, label='Posterior distribution')
         plt.legend()
-        plt.xlim([0, 60])
+        plt.xlim([5, 45])
         plt.subplot(122)
         sns.distplot(self.data['dx'], bins=30, kde=False, norm_hist=True,
                      hist_kws={'histtype': 'step', 'linewidth': 3}, label='Prior distribution')
@@ -290,43 +307,37 @@ class PostProcess(Functions):
                      hist_kws={'histtype': 'step', 'linewidth': 3}, label='Posterior distribution')
         plt.legend()
         plt.xlim([-30, 30])
-        fig.savefig('./img/marginalized_dist', format='svg')
+        fig.savefig('./img/marginalized_dist.svg', format='svg')
 
     def ordered(self):
         order = list(permutations(range(K)))
         mse = np.zeros(len(order))
+        list_order = [0, 1, 4, 7, 2, 5, 8, 3, 6, 9]
         for n, l in enumerate(order):
-            gmm_map = [self.gmm.weights_]
+            vars = [self.gmm.weights_]
             for k in l:
-                gmm_map.append(self.gmm.means_[k])
-            for k in l:
+                vars.append(self.gmm.means_[k])
                 sdx = np.sqrt(self.gmm.covariances_[k][0][0])
                 sdy = np.sqrt(self.gmm.covariances_[k][1][1])
-                gmm_map.append(np.array([sdx, sdy]))
-            for k in l:
-                sdx = np.sqrt(self.gmm.covariances_[k][0][0])
-                sdy = np.sqrt(self.gmm.covariances_[k][1][1])
+                vars.append(np.array([sdx, sdy]))
                 corr = np.array([self.gmm.covariances_[k][1][0] / (sdx * sdy)])
-                gmm_map.append(corr)
+                vars.append(corr)
+            gmm_map = [vars[k] for k in list_order]
             value = 0.
             for i in range(len(gmm_map)):
                 for (x, y) in zip(self.var_mu, gmm_map):
                     value += np.sum((x - y) ** 2)
             mse[n] = value
         index = mse.argmin()
-        gmm_map = []
-        gmm_map.append(np.array([self.gmm.weights_[k] for k in order[index]]))
+        vars = [self.gmm.weights_]
         for k in order[index]:
-            gmm_map.append(self.gmm.means_[k])
-        for k in order[index]:
+            vars.append(self.gmm.means_[k])
             sdx = np.sqrt(self.gmm.covariances_[k][0][0])
             sdy = np.sqrt(self.gmm.covariances_[k][1][1])
-            gmm_map.append(np.array([sdx, sdy]))
-        for k in order[index]:
-            sdx = np.sqrt(self.gmm.covariances_[k][0][0])
-            sdy = np.sqrt(self.gmm.covariances_[k][1][1])
+            vars.append(np.array([sdx, sdy]))
             corr = np.array([self.gmm.covariances_[k][1][0] / (sdx * sdy)])
-            gmm_map.append(corr)
+            vars.append(corr)
+        gmm_map = [vars[k] for k in list_order]
         return gmm_map
 
     def compare_1d(self):
@@ -342,17 +353,11 @@ class PostProcess(Functions):
             p_max = [p[k].max() for k in range(col)]
             [plt.plot(x[k], p[k]) for k in range(col)]
             [plt.plot([gmm_map[i][k], gmm_map[i][k]], [0, p_max[k]], color='r') for k in range(col)]
-            if i == 0:
-                plt.xlim([0, 1])
-            elif i > 0 and i <= K:
-                plt.xlim([-1, 30])
-            else:
-                plt.xlim([-1, 15])
             plt.subplot2grid([len(gmm_map), 2], [i, 1])
             plt.ylabel('Sample value')
             plt.title(self.var_name[i])
             plt.plot(self.var[i])
-        fig.savefig('./img/compare_1d', format='svg')
+        fig.savefig('./img/compare_1d.svg', format='svg')
 
     def compare_2d(self):
         w = [self.var_mu[0][k] for k in range(K)]
@@ -366,20 +371,20 @@ class PostProcess(Functions):
         plt.subplot(121)
         plt.scatter(self.data['x'], self.data['dx'], c=p1)
         plt.colorbar()
-        plt.xlim([0, 60])
+        plt.xlim([5, 45])
         plt.ylim([-30, 30])
         plt.subplot(122)
         plt.scatter(self.data['x'], self.data['dx'], c=p2)
         plt.colorbar()
-        plt.xlim([0, 60])
+        plt.xlim([5, 45])
         plt.ylim([-30, 30])
-        fig.savefig('./img/compare_2d', format='svg')
+        fig.savefig('./img/compare_2d.svg', format='svg')
         return p1
 
     def step(self):
         plt.figure(1)
         for i in range(len(self.var)):
-            plt.subplot2grid([10, 1], [i, 0])
+            plt.subplot2grid([len(self.var), 1], [i, 0])
             plt.ylabel('Frequency')
             plt.title(self.var_name[i])
             col = self.var[i].shape[1]
@@ -388,7 +393,6 @@ class PostProcess(Functions):
             [plt.plot(x[k], p[k]) for k in range(col)]
 
 
-# %%
 class Estimation:
     def __init__(self, data, m):
         self.data = data
@@ -405,46 +409,44 @@ class Estimation:
         plt.xlim([5, 45])
         plt.ylim([-10, 10])
         plt.legend()
-        fig.savefig('./img/importance_sampling', format='svg')
+        fig.savefig('./img/importance_sampling.svg', format='svg')
         print(samples['x'].iloc[s != 0].shape[0] / N)
 
 
-# %%
-if ON_TRAIN:
-    # PERCENT = np.arange(0.1, 1., 0.1)
-    # PERCENT = np.linspace(0.1, 0.1, 10)
-    PERCENT = [0.1]
-    data = []
-    for p in PERCENT:
+if __name__ == '__main__':
+    if ON_TRAIN:
+        # PERCENT = np.arange(0.1, 1., 0.1)
+        PERCENT = np.linspace(0.1, 0.1, 10)
+        # PERCENT = [0.1]
+        data = []
         d = LoadData()
-        data_prior, m = d.prior_samples(p)
-        f = BayesianGMM(data_prior)
-        trace = f.training()
-        data.append([data_prior, m, trace])
-    with open('./results/data3.pkl', 'wb') as file:
-        pickle.dump(data, file)
-else:
-    with open('./results/data3.pkl', 'rb') as file:
-        data = pickle.load(file)
-    # plt.figure()
-    # plt.ion()
-    # plt.show()
-    # c = ['r', 'b', 'lime']
-    for i in range(len(data)):
-        data_prior, m, trace = data[i]
-        p = PostProcess(data_prior, trace)
-        data_post = p.post_samples()
-        p.joint_dist(data_post)
-        p.marginalized_dist(data_post)
-        p.compare_1d()
-        prob = p.compare_2d()
-        e = Estimation(data_prior, m)
-        e.importance_sampling(prob)
-        # p.step()
-        # j = 0
-        # for var in p.var_mu:
-        #     plt.subplot(711 + j)
-        #     col = len(var)
-        #     [plt.plot(i, var[k], color=c[k], marker='.', markersize=10) for k in range(col)]
-        #     j += 1
-        # plt.subplots_adjust(hspace=0.5)
+        data_prior, m = d.prior_samples()
+        for p in PERCENT:
+
+            f = BayesianGMM(data_prior)
+            trace = f.training()
+            data.append([data_prior, m, trace])
+        with open('./results/data5.pkl', 'wb') as file:
+            pickle.dump(data, file)
+    else:
+        with open('./results/data5.pkl', 'rb') as file:
+            data = pickle.load(file)
+        for i in range(1): #range(len(data)):
+            data_prior, m, trace = data[i]
+            p = PostProcess(data_prior, trace)
+            data_post = p.post_samples(data_prior.shape[0])
+            # p.joint_dist(data_post)
+            # p.marginalized_dist(data_post)
+            # p.compare_1d()
+            # prob = p.compare_2d()
+            # e = Estimation(data_prior, m)
+            # e.importance_sampling(prob)
+            # p.step()
+            # if data_prior.shape[0] > data_post.shape[0]:
+            #     num = data_post.shape[0]
+            #     data_prior = data_prior.iloc[:num]
+            # if data_prior.shape[0] < data_post.shape[0]:
+            #     num = data_prior.shape[0]
+            #     data_post = data_post.iloc[:num]
+            # KL = scipy.stats.entropy(data_prior.values[:, 0], data_post.values[:, 0])
+            # print(KL)

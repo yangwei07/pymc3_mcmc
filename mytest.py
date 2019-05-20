@@ -416,10 +416,10 @@ if ON_TRAIN:
         f = BayesianGMM(data_prior)
         trace = f.training()
         data.append([data_prior, m, trace])
-    with open('./results/data0.pkl', 'wb') as file:
+    with open('./results/data1.pkl', 'wb') as file:
         pickle.dump(data, file)
 else:
-    with open('./results/data.pkl', 'rb') as file:
+    with open('./results/data1.pkl', 'rb') as file:
         data = pickle.load(file)
     # plt.figure()
     # plt.ion()

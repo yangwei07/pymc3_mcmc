@@ -1,5 +1,6 @@
 import os
 import pickle
+import torch
 import scipy.stats
 import pymc3 as pm
 import numpy as np
@@ -89,6 +90,36 @@ class Functions:
                 prob[i, k] = w[k] * f[k]
             cluster[i] = prob[i].argmax()
         return cluster
+
+    def sigmoid(self, x):
+        return 1 / (1 + np.exp(-x))
+
+    def stocGraAscent(self, data, label):
+        m, n = np.shape(data)
+        w = np.ones([n, 1])
+        alpha = 0.25
+        gamma = 2
+        episode = 1000
+        mini_batch = 1000
+        w_trace = [w]
+        loss = []
+        for i in range(episode):
+            dataIndex = np.random.choice(m, mini_batch, False)
+            lr = 0.001
+            pred = self.sigmoid(data[dataIndex].dot(w)).T
+            real = label[dataIndex]
+            # error = self.sigmoid(data[dataIndex].dot(w)).T - label[dataIndex]
+            error = -real * alpha * (1 - pred) ** gamma * np.log(pred+1e-5) - \
+                    (1 - real) * (1 - alpha) * pred ** gamma * np.log(1 - pred+1e-5)
+            crossentropyloss = np.sum([-y * np.log(x) - (1 - y) * np.log(1 - x) for x, y in zip(pred, real)])
+            # if mse <= 1e-3:
+            #     break
+            # else:
+            w = w - lr * data[dataIndex].T.dot(error.T)
+            w_trace.append(w)
+            loss.append(crossentropyloss)
+        w_trace = np.hstack(w_trace)
+        return w_trace
 
 
 class LoadData:
@@ -367,18 +398,18 @@ class PostProcess(Functions):
         p2 = self.norm_2d(self.data.values, w, mu, cov)
         p1 = p1 / np.sum(p1)
         p2 = p2 / np.sum(p2)
-        fig = plt.figure()
-        plt.subplot(121)
-        plt.scatter(self.data['x'], self.data['dx'], c=p1)
-        plt.colorbar()
-        plt.xlim([5, 45])
-        plt.ylim([-30, 30])
-        plt.subplot(122)
-        plt.scatter(self.data['x'], self.data['dx'], c=p2)
-        plt.colorbar()
-        plt.xlim([5, 45])
-        plt.ylim([-30, 30])
-        fig.savefig('./img/compare_2d.svg', format='svg')
+        # fig = plt.figure()
+        # plt.subplot(121)
+        # plt.scatter(self.data['x'], self.data['dx'], c=p1)
+        # plt.colorbar()
+        # plt.xlim([5, 45])
+        # plt.ylim([-30, 30])
+        # plt.subplot(122)
+        # plt.scatter(self.data['x'], self.data['dx'], c=p2)
+        # plt.colorbar()
+        # plt.xlim([5, 45])
+        # plt.ylim([-30, 30])
+        # fig.savefig('./img/compare_2d.svg', format='svg')
         return p1
 
     def step(self):
@@ -393,8 +424,9 @@ class PostProcess(Functions):
             [plt.plot(x[k], p[k]) for k in range(col)]
 
 
-class Estimation:
-    def __init__(self, data, m):
+class Estimation(PostProcess):
+    def __init__(self, data, m, trace):
+        super(Estimation, self).__init__(data, trace)
         self.data = data
         self.m = m
 
@@ -412,34 +444,66 @@ class Estimation:
         fig.savefig('./img/importance_sampling.svg', format='svg')
         print(samples['x'].iloc[s != 0].shape[0] / N)
 
+    def maneuver(self, prob):
+        N = 1000
+        index = np.random.choice(self.data.shape[0], N, True, prob)
+        # index = range(self.data.shape[0])
+        samples = self.data.iloc[index]
+        s = self.m[index]
+        w = [self.var_mu[0][k] for k in range(K)]
+        mu = [self.var_mu[k + 1] for k in range(K)]
+        cov = [self.make_cov_matrix(sigma=self.var_mu[k + 1 + K], corr=self.var_mu[k + 1 + 2 * K]) for k in range(K)]
+        c = self.cluster(samples.values, w, mu, cov)
+        fig = plt.figure()
+        sns.scatterplot(x='x', y='dx', data=samples, alpha=0.1)
+        plt.scatter(samples['x'].iloc[s != 0], samples['dx'].iloc[s != 0], c=c[s != 0])
+        plt.xlim([5, 45])
+        plt.ylim([-30, 30])
+        fig.savefig('./img/importance_sampling.svg', format='svg')
+        print(samples['x'].iloc[s != 0].shape[0] / N)
+
+    def logit_classify(self):
+        w_trace = self.stocGraAscent(self.data.values, self.m)
+        return w_trace
+
 
 if __name__ == '__main__':
     if ON_TRAIN:
         # PERCENT = np.arange(0.1, 1., 0.1)
-        PERCENT = np.linspace(0.1, 0.1, 10)
-        # PERCENT = [0.1]
+        # PERCENT = np.linspace(0.1, 0.1, 10)
+        PERCENT = [0.8]
         data = []
         d = LoadData()
-        data_prior, m = d.prior_samples()
+        data_prior, m = d.prior_samples(PERCENT[0])
         for p in PERCENT:
-
             f = BayesianGMM(data_prior)
             trace = f.training()
             data.append([data_prior, m, trace])
-        with open('./results/data5.pkl', 'wb') as file:
+        with open('./results/data6.pkl', 'wb') as file:
             pickle.dump(data, file)
     else:
-        with open('./results/data5.pkl', 'rb') as file:
+        with open('./results/data6.pkl', 'rb') as file:
             data = pickle.load(file)
         for i in range(1): #range(len(data)):
             data_prior, m, trace = data[i]
             p = PostProcess(data_prior, trace)
-            data_post = p.post_samples(data_prior.shape[0])
+            # data_post = p.post_samples(data_prior.shape[0])
             # p.joint_dist(data_post)
             # p.marginalized_dist(data_post)
             # p.compare_1d()
-            # prob = p.compare_2d()
-            # e = Estimation(data_prior, m)
+            prob = p.compare_2d()
+            e = Estimation(data_prior, m, trace)
+            w_trace = e.logit_classify()
+            w = w_trace[:, -1]
+            pred = e.sigmoid(data_prior.dot(w)).T
+            plt.figure()
+            plt.subplot(211)
+            plt.plot(pred, c='r', label='predict')
+            plt.legend()
+            plt.subplot(212)
+            plt.plot(m, c='b', label='truth')
+            plt.legend()
+            # e.maneuver(prob)
             # e.importance_sampling(prob)
             # p.step()
             # if data_prior.shape[0] > data_post.shape[0]:

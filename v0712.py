@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.interpolate import spline
+# from scipy.interpolate import spline
 from scipy.linalg import cho_solve
 from numpy.linalg import cholesky
 from itertools import cycle
@@ -117,7 +117,10 @@ def smooth(data, window):
     return np.concatenate((  start , out0, stop  ))
 
 # Insert data here.
-data = pd.read_csv('speed.txt', sep='\s+', names=['time', 'speed'])
+data = pd.read_csv('./UAH/D1/20151110175712-16km-D1-NORMAL1-SECONDARY/RAW_GPS.txt',
+                   sep='\s+', names=['time', 'speed'], usecols=[0, 1])
+time = np.arange(10, 600, 0.1)
+speed = np.interp(time, data['time'], data['speed'])
 DURATION = 500
 PREDICTION = 50
 WIDTH_SCALE = 10
@@ -129,10 +132,10 @@ model = SimpleGP(WIDTH_SCALE, LENGTH_SCALE)
 for i in range(10):
     ix = np.arange(i * DURATION, (i + 1) * DURATION + 1, PREDICTION)
     num = len(ix)
-    sample_x = data['time'].values[ix]
-    sample_y = data['speed'].values[ix] - np.mean(data['speed'].values[ix])
+    sample_x = time[ix]
+    sample_y = speed[ix] - np.mean(speed[ix])
     sample_s = 0.1 * np.random.rand(num) * np.ones_like(sample_x)
-    m_speed = np.mean(data['speed'].values[ix])
+    m_speed = np.mean(speed[ix])
     model.fit(sample_x, sample_y, sample_s)
 
     test_x = np.arange(sample_x[0], sample_x[-1] + 5, .1)
@@ -150,7 +153,7 @@ for i in range(10):
     plt.plot([sample_x[0], sample_x[0]], [np.min(sample_y + m_speed), np.max(sample_y + m_speed)], c='r', ls='--')
     plt.plot([sample_x[-1], sample_x[-1]], [np.min(sample_y + m_speed), np.max(sample_y + m_speed)], c='r', ls='--')
     ix = np.arange(i * DURATION, (i + 1) * DURATION + PREDICTION, PREDICTION)
-    time = data['time'].values[ix]
-    speed = data['speed'].values[ix]
-    speed = smooth(speed, 3)
-    plt.plot(time, speed, c='b', linewidth=2)
+    real_x = time[ix]
+    real_y = speed[ix]
+    real_y = smooth(real_y, 3)
+    plt.plot(real_x, real_y, c='b', linewidth=2)
